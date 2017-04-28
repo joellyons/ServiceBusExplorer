@@ -20,24 +20,29 @@
 #endregion
 
 #region Using Directives
+
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
-using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using System.Linq;
+using Microsoft.Azure.ServiceBusExplorer.Forms;
+using Microsoft.Azure.ServiceBusExplorer.Helpers;
 using Microsoft.ServiceBus;
 using Microsoft.ServiceBus.Messaging;
+
+// ReSharper disable CoVariantArrayConversion
 #endregion
 
-namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
+namespace Microsoft.Azure.ServiceBusExplorer.Controls
 {
     public partial class PartitionListenerControl : UserControl
     {
@@ -149,7 +154,9 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
         private Dictionary<string, bool> registeredDictionary = new Dictionary<string, bool>();
         private bool clearing;
         private bool cleared;
-        private string iotHubConnectionString;
+        private readonly string iotHubConnectionString;
+        public Task AsyncTrackEventDataTask { get; private set; }
+
         #endregion
 
         #region Public Constructors
@@ -165,13 +172,6 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                                         ConsumerGroupDescription consumerGroupDescription,
                                         IEnumerable<PartitionDescription> partitionDescriptions)
         {
-            Task.Factory.StartNew(AsyncTrackEventData).ContinueWith(t =>
-            {
-                if (t.IsFaulted && t.Exception != null)
-                {
-                    writeToLog(t.Exception.Message);
-                }
-            });
             this.writeToLog = writeToLog;
             this.stopLog = stopLog;
             this.startLog = startLog;
@@ -185,9 +185,11 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                                            ? eventHubClient.GetDefaultConsumerGroup()
                                            : eventHubClient.GetConsumerGroup(consumerGroupDescription.Name);
             IList<string> partitionIdList = partitionDescriptions.Select(pd => pd.PartitionId).ToList();
-            foreach (var id in partitionIdList)
+            var taskList = partitionIdList.Select(id => eventHubClient.GetPartitionRuntimeInformationAsync(id)).ToList();
+            Task.WaitAll(taskList.ToArray());
+            foreach (var task in taskList)
             {
-                partitionRuntumeInformationList.Add(eventHubClient.GetPartitionRuntimeInformation(id));
+                partitionRuntumeInformationList.Add(task.Result);
             }
             partitionCount = partitionRuntumeInformationList.Count;
             InitializeComponent();
@@ -202,13 +204,6 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                                         string hubName,
                                         string consumerGroupName)
         {
-            Task.Factory.StartNew(AsyncTrackEventData).ContinueWith(t =>
-            {
-                if (t.IsFaulted && t.Exception != null)
-                {
-                    writeToLog(t.Exception.Message);
-                }
-            });
             this.iotHubConnectionString = iotHubConnectionString;
             this.writeToLog = writeToLog;
             this.stopLog = stopLog;
@@ -221,9 +216,11 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                                            ? eventHubClient.GetDefaultConsumerGroup()
                                            : eventHubClient.GetConsumerGroup(consumerGroupName);
             IList<string> partitionIdList = new List<string>(eventHubClient.GetRuntimeInformation().PartitionIds);
-            foreach (var id in partitionIdList)
+            var taskList = partitionIdList.Select(id => eventHubClient.GetPartitionRuntimeInformationAsync(id)).ToList();
+            Task.WaitAll(taskList.ToArray());
+            foreach (var task in taskList)
             {
-                partitionRuntumeInformationList.Add(eventHubClient.GetPartitionRuntimeInformation(id));
+                partitionRuntumeInformationList.Add(task.Result);
             }
             partitionCount = partitionRuntumeInformationList.Count;
             InitializeComponent();
@@ -782,6 +779,15 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                                            : null;
 
                 cancellationTokenSource = new CancellationTokenSource();
+
+                AsyncTrackEventDataTask = Task.Factory.StartNew(AsyncTrackEventData, cancellationTokenSource.Token).ContinueWith(t =>
+                {
+                    if (t.IsFaulted && t.Exception != null)
+                    {
+                        writeToLog(t.Exception.Message);
+                    }
+                });
+
                 btnStart.Text = Stop;
                 blockingCollection = new BlockingCollection<Tuple<long, long, long>>();
                 timer = new System.Timers.Timer
@@ -899,7 +905,7 @@ EventProcessorCheckpointHelper.GetLease(ns, eventHub, consumerGroup.GroupName, p
         {
             try
             {
-                while (true)
+                while (!cancellationTokenSource.IsCancellationRequested)
                 {
                     try
                     {
@@ -1103,10 +1109,7 @@ EventProcessorCheckpointHelper.GetLease(ns, eventHub, consumerGroup.GroupName, p
 
         private async Task StopListenerAsync()
         {
-            if (cancellationTokenSource != null)
-            {
-                cancellationTokenSource.Cancel();
-            }
+            cancellationTokenSource?.Cancel();
             lock (this)
             {
                 stopping = true;

@@ -37,11 +37,14 @@ using System.Threading;
 using Microsoft.ServiceBus;
 using Microsoft.ServiceBus.Messaging;
 using Microsoft.Azure.NotificationHubs;
+using Microsoft.Azure.ServiceBusExplorer.Controls;
+using Microsoft.Azure.ServiceBusExplorer.Forms;
+using Microsoft.Azure.ServiceBusExplorer.Helpers;
 
 #endregion
 
 // ReSharper disable CheckNamespace
-namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
+namespace Microsoft.Azure.ServiceBusExplorer
 // ReSharper restore CheckNamespace
 {
     public enum BodyType
@@ -64,6 +67,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
         private const string DeadLetterQueue = "$DeadLetterQueue";
         private const string NullValue = "NULL";
         private const string CloudServiceBusPostfix = ".servicebus.windows.net";
+        private const string GermanyServiceBusPostfix = ".servicebus.cloudapi.de";
         private const string ChinaServiceBusPostfix = ".servicebus.chinacloudapi.cn";
         private const string TestServiceBusPostFix = ".servicebus.int7.windows-int.net";
         private const int MaxBufferSize = 262144; // 256 KB
@@ -260,6 +264,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                        !string.IsNullOrWhiteSpace(uri = namespaceUri.ToString()) &&
                        (uri.Contains(CloudServiceBusPostfix) || 
                         uri.Contains(TestServiceBusPostFix) || 
+                        uri.Contains(GermanyServiceBusPostfix) ||
                         uri.Contains(ChinaServiceBusPostfix));
             }
         }
@@ -3549,7 +3554,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
             outboundMessage.MessageId = updateMessageId ? Guid.NewGuid().ToString() : messageTemplate.MessageId;
             outboundMessage.SessionId = oneSessionPerTask ? taskId.ToString(CultureInfo.InvariantCulture) : messageTemplate.SessionId;
             
-            if (bodyType == BodyType.String)
+            if (bodyType == BodyType.String || bodyType == BodyType.ByteArray || bodyType == BodyType.Stream)
             {
                 if (!string.IsNullOrWhiteSpace(messageTemplate.Label))
                 {
@@ -3577,7 +3582,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                 }
                 foreach (var property in messageTemplate.Properties)
                 {
-                    outboundMessage.Properties.Add(property.Key, property.Value);
+                    outboundMessage.Properties[property.Key] = property.Value;
                 }
                 outboundMessage.TimeToLive = messageTemplate.TimeToLive;
                 outboundMessage.ScheduledEnqueueTimeUtc = messageTemplate.ScheduledEnqueueTimeUtc;
@@ -5311,6 +5316,18 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                 receiverList.Add(messageReceiver);
                 ReceiveNextMessage(messageCount, 0, messageReceiver, encoder, complete, receiveTimeout);
             }
+        }
+
+        public string GetHostWithoutNamespace()
+        {
+            if (namespaceUri == null || 
+                string.IsNullOrWhiteSpace(namespaceUri.Host))
+            {
+                return null;
+            }
+            var host = namespaceUri.Host;
+            var index = host.IndexOf('.');
+            return host.Substring(index);
         }
         #endregion
 

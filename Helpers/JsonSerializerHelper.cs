@@ -20,16 +20,34 @@
 #endregion
 
 #region Using Directives
+
 using System;
 using System.IO;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+
 #endregion
 
-namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
+namespace Microsoft.Azure.ServiceBusExplorer.Helpers
 {
     public static class JsonSerializerHelper
     {
+        /// <summary>
+        /// Indent the supplied json string
+        /// </summary>
+        /// <param name="json">Json to indent</param>
+        /// <returns>Indented json</returns>
+        public static string Indent(string json)
+        {
+            try
+            {
+                return JsonConvert.SerializeObject(JsonConvert.DeserializeObject(json), Formatting.Indented);
+            }
+            catch (Exception)
+            {
+                return json;
+            }
+        }
         /// <summary>
         /// Serialize an object using the DataContractJsonSerializer.
         /// </summary>
@@ -42,7 +60,6 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
             {
                 throw new ArgumentException("The item argument cannot be null.");
             }
-
             var json = JsonConvert.SerializeObject(item, formatting);
             return json;
         }

@@ -20,12 +20,14 @@
 #endregion
 
 #region Using Directives
+
 using System;
-using System.Windows.Forms;
 using System.Drawing;
+using System.Windows.Forms;
+
 #endregion
 
-namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
+namespace Microsoft.Azure.ServiceBusExplorer.Forms
 {
     public partial class DeleteForm : Form
     {
@@ -42,7 +44,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
         {
             InitializeComponent();
             lblMessage.Text = string.Format(message);
-            Width = lblMessage.Width + 72;
+            Width = lblMessage.Width + 88;
         }
 
         public DeleteForm(string entityName, string entityType)
@@ -51,7 +53,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
             lblMessage.Text = string.Format(MessageFormat,
                                             entityType ?? Unknown,
                                             entityName ?? Unknown);
-            Width = lblMessage.Width + 72;
+            Width = lblMessage.Width + 88;
         }
         #endregion
 

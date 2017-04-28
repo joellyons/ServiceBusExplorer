@@ -20,21 +20,26 @@
 #endregion
 
 #region Using Directives
+
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
-using System.Windows.Forms;
 using System.Threading.Tasks;
+using System.Windows.Forms;
+using Microsoft.Azure.ServiceBusExplorer.Forms;
+using Microsoft.Azure.ServiceBusExplorer.Helpers;
 using Microsoft.ServiceBus.Messaging;
+
 #endregion
 
-namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
+namespace Microsoft.Azure.ServiceBusExplorer.Controls
 {
     public partial class HandleSubscriptionControl : UserControl
     {
@@ -121,7 +126,6 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
         private const string SelectEntityLabelText = "Target Queue or Topic:";
 
         private const string DoubleClickMessage = "Double-click a row to repair and resubmit the corresponding message.";
-        private const string MessageSentMessage = "[{0}] messages where sent to [{1}]";
 
         private const string FilterExpressionTitle = "Define Filter Expression";
         private const string FilterExpressionLabel = "Filter Expression";
@@ -220,11 +224,12 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
         private SortableBindingList<MessageSession> sessionBindingList;
         private readonly List<string> metricTabPageIndexList = new List<string>();
         private readonly ManualResetEvent metricsManualResetEvent = new ManualResetEvent(false);
+        private bool buttonsMoved;
         #endregion
 
         #region Private Static Fields
-        private static readonly List<string> operators = new List<string> { "ge", "gt", "le", "lt", "eq", "ne" };
-        private static readonly List<string> timeGranularityList = new List<string> { "PT5M", "PT1H", "P1D", "P7D" };
+        private static readonly List<string> Operators = new List<string> { "ge", "gt", "le", "lt", "eq", "ne" };
+        private static readonly List<string> TimeGranularityList = new List<string> { "PT5M", "PT1H", "P1D", "P7D" };
         #endregion
 
         #region Public Constructors
@@ -293,23 +298,50 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
         {
             using (var receiveModeForm = new ReceiveModeForm(RetrieveMessagesFromDeadletterQueue, MainForm.SingletonMainForm.TopCount, serviceBusHelper.BrokeredMessageInspectors.Keys))
             {
-                if (receiveModeForm.ShowDialog() == DialogResult.OK)
+                if (receiveModeForm.ShowDialog() != DialogResult.OK)
                 {
-                    txtDeadletterText.Text = string.Empty;
-                    deadletterPropertyListView.Items.Clear();
-                    deadletterPropertyGrid.SelectedObject = null;
-                    var messageInspector = !string.IsNullOrEmpty(receiveModeForm.Inspector) &&
-                                           serviceBusHelper.BrokeredMessageInspectors.ContainsKey(receiveModeForm.Inspector) ?
-                                           Activator.CreateInstance(serviceBusHelper.BrokeredMessageInspectors[receiveModeForm.Inspector]) as IBrokeredMessageInspector :
-                                           null;
-                    if (subscriptionWrapper.TopicDescription.EnablePartitioning)
-                    {
-                        ReadDeadletterMessagesOneAtTheTime(receiveModeForm.Peek, receiveModeForm.All, receiveModeForm.Count, messageInspector);
-                    }
-                    else
-                    {
-                        GetDeadletterMessages(receiveModeForm.Peek, receiveModeForm.All, receiveModeForm.Count, messageInspector);
-                    }
+                    return;
+                }
+                txtDeadletterText.Text = string.Empty;
+                deadletterPropertyListView.Items.Clear();
+                deadletterPropertyGrid.SelectedObject = null;
+                var messageInspector = !string.IsNullOrEmpty(receiveModeForm.Inspector) &&
+                                       serviceBusHelper.BrokeredMessageInspectors.ContainsKey(receiveModeForm.Inspector) ?
+                    Activator.CreateInstance(serviceBusHelper.BrokeredMessageInspectors[receiveModeForm.Inspector]) as IBrokeredMessageInspector :
+                    null;
+                if (subscriptionWrapper.TopicDescription.EnablePartitioning)
+                {
+                    ReadDeadletterMessagesOneAtTheTime(receiveModeForm.Peek, receiveModeForm.All, receiveModeForm.Count, messageInspector);
+                }
+                else
+                {
+                    GetDeadletterMessages(receiveModeForm.Peek, receiveModeForm.All, receiveModeForm.Count, messageInspector);
+                }
+            }
+        }
+
+        public void GetTransferDeadletterMessages()
+        {
+            using (var receiveModeForm = new ReceiveModeForm(RetrieveMessagesFromDeadletterQueue, MainForm.SingletonMainForm.TopCount, serviceBusHelper.BrokeredMessageInspectors.Keys))
+            {
+                if (receiveModeForm.ShowDialog() != DialogResult.OK)
+                {
+                    return;
+                }
+                txtDeadletterText.Text = string.Empty;
+                deadletterPropertyListView.Items.Clear();
+                deadletterPropertyGrid.SelectedObject = null;
+                var messageInspector = !string.IsNullOrEmpty(receiveModeForm.Inspector) &&
+                                       serviceBusHelper.BrokeredMessageInspectors.ContainsKey(receiveModeForm.Inspector) ?
+                    Activator.CreateInstance(serviceBusHelper.BrokeredMessageInspectors[receiveModeForm.Inspector]) as IBrokeredMessageInspector :
+                    null;
+                if (subscriptionWrapper.TopicDescription.EnablePartitioning)
+                {
+                    ReadDeadletterMessagesOneAtTheTime(receiveModeForm.Peek, receiveModeForm.All, receiveModeForm.Count, messageInspector);
+                }
+                else
+                {
+                    GetDeadletterMessages(receiveModeForm.Peek, receiveModeForm.All, receiveModeForm.Count, messageInspector);
                 }
             }
         }
@@ -372,6 +404,128 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                 tabPageSessions.ResumeLayout();
                 tabPageSessions.ResumeDrawing();
                 Cursor.Current = Cursors.Default;
+            }
+        }
+
+        public async Task<long> PurgeMessagesAsync()
+        {
+            using (var deleteForm = new DeleteForm($"Would you like to purge the {subscriptionWrapper.SubscriptionDescription.Name} subscription?"))
+            {
+                if (deleteForm.ShowDialog() != DialogResult.OK)
+                {
+                    return 0;
+                }
+            }
+
+            try
+            {
+                Application.UseWaitCursor = true;
+                var stopwatch = new Stopwatch();
+                stopwatch.Start();
+
+                var entityPath = SubscriptionClient.FormatSubscriptionPath(subscriptionWrapper.SubscriptionDescription.TopicPath, subscriptionWrapper.SubscriptionDescription.Name);
+                var messagingFactory = MessagingFactory.CreateFromConnectionString(serviceBusHelper.ConnectionString);
+                var receiver = await messagingFactory.CreateMessageReceiverAsync(entityPath, ReceiveMode.ReceiveAndDelete);
+                var count = 0;
+                while (true)
+                {
+                    var messages = await receiver.ReceiveBatchAsync(1000, TimeSpan.FromMilliseconds(100));
+                    // ReSharper disable once PossibleMultipleEnumeration
+                    if (messages.Any())
+                    {
+                        // ReSharper disable once PossibleMultipleEnumeration
+                        count += messages.Count();
+                    }
+                    else
+                    {
+                        if (subscriptionWrapper.TopicDescription.EnablePartitioning)
+                        {
+                            while (true)
+                            {
+                                var message = await receiver.ReceiveAsync(TimeSpan.FromMilliseconds(100));
+                                if (message != null)
+                                {
+                                    count++;
+                                }
+                                else
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                stopwatch.Stop();
+                MainForm.SingletonMainForm.refreshEntity_Click(null, null);
+                writeToLog($"[{count}] messages have been purged from the [{entityPath}] subscription in [{stopwatch.ElapsedMilliseconds}] milliseconds.");
+                return count;
+            }
+            finally
+            {
+                Application.UseWaitCursor = false;
+            }
+        }
+
+        public async Task<long> PurgeDeadletterQueueMessagesAsync()
+        {
+            using (var deleteForm = new DeleteForm($"Would you like to purge the deadletter queue of the {subscriptionWrapper.SubscriptionDescription.Name} subscription?"))
+            {
+                if (deleteForm.ShowDialog() != DialogResult.OK)
+                {
+                    return 0;
+                }
+            }
+
+            try
+            {
+                Application.UseWaitCursor = true;
+                var stopwatch = new Stopwatch();
+                stopwatch.Start();
+
+                var entityPath = SubscriptionClient.FormatDeadLetterPath(subscriptionWrapper.SubscriptionDescription.TopicPath, subscriptionWrapper.SubscriptionDescription.Name);
+                var messagingFactory = MessagingFactory.CreateFromConnectionString(serviceBusHelper.ConnectionString);
+                var receiver = await messagingFactory.CreateMessageReceiverAsync(entityPath, ReceiveMode.ReceiveAndDelete);
+                var count = 0;
+                while (true)
+                {
+                    var messages = await receiver.ReceiveBatchAsync(1000, TimeSpan.FromMilliseconds(100));
+                    // ReSharper disable once PossibleMultipleEnumeration
+                    if (messages.Any())
+                    {
+                        // ReSharper disable once PossibleMultipleEnumeration
+                        count += messages.Count();
+                    }
+                    else
+                    {
+                        if (subscriptionWrapper.TopicDescription.EnablePartitioning)
+                        {
+                            while (true)
+                            {
+                                var message = await receiver.ReceiveAsync(TimeSpan.FromMilliseconds(100));
+                                if (message != null)
+                                {
+                                    count++;
+                                }
+                                else
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                stopwatch.Stop();
+                entityPath = SubscriptionClient.FormatSubscriptionPath(subscriptionWrapper.SubscriptionDescription.TopicPath,
+                                                                           subscriptionWrapper.SubscriptionDescription.Name);
+                MainForm.SingletonMainForm.refreshEntity_Click(null, null);
+                writeToLog($"[{count}] messages have been purged from the deadletter queue of the [{entityPath}] subscription in [{stopwatch.ElapsedMilliseconds}] milliseconds.");
+                return count;
+            }
+            finally
+            {
+                Application.UseWaitCursor = false;
             }
         }
         #endregion
@@ -455,7 +609,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                 // Create the Time Granularity column
                 var timeGranularityColumn = new DataGridViewComboBoxColumn
                     {
-                        DataSource = timeGranularityList,
+                        DataSource = TimeGranularityList,
                         DataPropertyName = GranularityProperty,
                         Name = GranularityProperty,
                         Width = 72,
@@ -466,7 +620,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                 // Create the Time Operator 1 column
                 var operator1Column = new DataGridViewComboBoxColumn
                     {
-                        DataSource = operators,
+                        DataSource = Operators,
                         DataPropertyName = TimeFilterOperator1Name,
                         HeaderText = TimeFilterOperator,
                         Name = TimeFilterOperator1Name,
@@ -488,7 +642,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                 // Create the Time Operator 1 column
                 var operator2Column = new DataGridViewComboBoxColumn
                     {
-                        DataSource = operators,
+                        DataSource = Operators,
                         DataPropertyName = TimeFilterOperator2Name,
                         HeaderText = TimeFilterOperator,
                         Name = TimeFilterOperator2Name,
@@ -830,6 +984,8 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                 btnDeadletter.Visible = false;
                 btnMetrics.Visible = false;
                 btnCloseTabs.Visible = false;
+                btnPurgeMessages.Visible = false;
+                btnPurgeDeadletterQueueMessages.Visible = false;
                 txtName.Focus();
             }
         }
@@ -847,21 +1003,13 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
             btnMessages.Visible = string.IsNullOrWhiteSpace(subscriptionWrapper.SubscriptionDescription.ForwardTo);
             btnDeadletter.Visible = string.IsNullOrWhiteSpace(subscriptionWrapper.SubscriptionDescription.ForwardDeadLetteredMessagesTo);
 
-            if (!btnMessages.Visible && !btnSessions.Visible)
+            if (btnMessages.Visible && !btnSessions.Visible && !buttonsMoved)
             {
-                btnMetrics.Location = btnCloseTabs.Location;
-                btnCloseTabs.Location = btnMessages.Location;
-            }
-            if (!btnMessages.Visible && btnSessions.Visible)
-            {
+                btnPurgeMessages.Location = btnPurgeDeadletterQueueMessages.Location;
+                btnPurgeDeadletterQueueMessages.Location = btnMetrics.Location;
                 btnMetrics.Location = btnCloseTabs.Location;
                 btnCloseTabs.Location = btnSessions.Location;
-                btnSessions.Location = btnMessages.Location;
-            }
-            if (btnMessages.Visible && !btnSessions.Visible)
-            {
-                btnMetrics.Location = btnCloseTabs.Location;
-                btnCloseTabs.Location = btnSessions.Location;
+                buttonsMoved = true;
             }
 
             btnMetrics.Visible = serviceBusHelper.IsCloudNamespace;
@@ -1688,10 +1836,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
         {
             if (btnCancelUpdate.Text == CancelText)
             {
-                if (OnCancel != null)
-                {
-                    OnCancel();
-                }
+                OnCancel?.Invoke();
             }
             else
             {
@@ -2398,7 +2543,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
 
         private void textBox_KeyPress(object sender, KeyPressEventArgs e)
         {
-            base.OnKeyPress(e);
+            OnKeyPress(e);
 
             var numberFormatInfo = CultureInfo.CurrentCulture.NumberFormat;
             var decimalSeparator = numberFormatInfo.NumberDecimalSeparator;
@@ -2558,17 +2703,13 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                     serviceBusHelper.Namespace,
                     pointBindingList);
                 var uriList = uris as IList<Uri> ?? uris.ToList();
-                if (uris == null || !uriList.Any())
+                if (!uriList.Any())
                 {
                     return;
                 }
                 var metricData = MetricHelper.ReadMetricDataUsingTasks(uriList,
                     MainForm.SingletonMainForm.CertificateThumbprint);
                 var metricList = metricData as IList<IEnumerable<MetricValue>> ?? metricData.ToList();
-                if (metricData == null && metricList.Count == 0)
-                {
-                    return;
-                }
                 for (var i = 0; i < metricList.Count; i++)
                 {
                     if (metricList[i] == null || !metricList[i].Any())
@@ -2722,7 +2863,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
             messagesDataGridView_CellDoubleClick(messagesDataGridView, new DataGridViewCellEventArgs(0, currentMessageRowIndex));
         }
 
-        private async void resubmitSelectedMessagesInBatchModeToolStripMenuItem_Click(object sender, EventArgs e)
+        private void resubmitSelectedMessagesInBatchModeToolStripMenuItem_Click(object sender, EventArgs e)
         {
             try
             {
@@ -2730,57 +2871,11 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                 {
                     return;
                 }
-                string entityPath;
-                using (var form = new SelectEntityForm(SelectEntityDialogTitle, SelectEntityGrouperTitle, SelectEntityLabelText))
+                using (var form = new MessageForm(messagesDataGridView.SelectedRows.Cast<DataGridViewRow>()
+                                .Select(r => (BrokeredMessage)r.DataBoundItem), serviceBusHelper, writeToLog))
                 {
-                    if (form.ShowDialog() != DialogResult.OK)
-                    {
-                        return;
-                    }
-                    if (string.IsNullOrWhiteSpace(form.Path))
-                    {
-                        return;
-                    }
-                    entityPath = form.Path;
+                    form.ShowDialog();
                 }
-                var sent = 0;
-                var messageSender = await serviceBusHelper.MessagingFactory.CreateMessageSenderAsync(entityPath);
-                var messages = messagesDataGridView.SelectedRows.Cast<DataGridViewRow>().Select(r =>
-                {
-                    BodyType bodyType;
-                    var message = r.DataBoundItem as BrokeredMessage;
-                    serviceBusHelper.GetMessageText(message, out bodyType);
-                    if (bodyType == BodyType.Wcf)
-                    {
-                        var wcfUri = serviceBusHelper.IsCloudNamespace ?
-                                         new Uri(serviceBusHelper.NamespaceUri, messageSender.Path) :
-                                         new UriBuilder
-                                         {
-                                             Host = serviceBusHelper.NamespaceUri.Host,
-                                             Path = string.Format("{0}/{1}", serviceBusHelper.NamespaceUri.AbsolutePath, messageSender.Path),
-                                             Scheme = "sb"
-                                         }.Uri;
-                        return serviceBusHelper.CreateMessageForWcfReceiver(message,
-                                                                            0,
-                                                                            false,
-                                                                            false,
-                                                                            wcfUri);
-                    }
-                    return serviceBusHelper.CreateMessageForApiReceiver(message,
-                                                                        0,
-                                                                        false,
-                                                                        false,
-                                                                        false,
-                                                                        bodyType,
-                                                                        null);
-                });
-                IEnumerable<BrokeredMessage> brokeredMessages = messages as IList<BrokeredMessage> ?? messages.ToList();
-                if (brokeredMessages.Any())
-                {
-                    sent = brokeredMessages.Count();
-                    await messageSender.SendBatchAsync(brokeredMessages);
-                }
-                writeToLog(string.Format(MessageSentMessage, sent, entityPath));
             }
             catch (Exception ex)
             {
@@ -2808,7 +2903,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
             deadletterDataGridView_CellDoubleClick(deadletterDataGridView, new DataGridViewCellEventArgs(0, currentDeadletterMessageRowIndex));
         }
 
-        private async void resubmitSelectedDeadletterMessagesInBatchModeToolStripMenuItem_Click(object sender, EventArgs e)
+        private void resubmitSelectedDeadletterMessagesInBatchModeToolStripMenuItem_Click(object sender, EventArgs e)
         {
             try
             {
@@ -2816,57 +2911,11 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                 {
                     return;
                 }
-                string entityPath;
-                using (var form = new SelectEntityForm(SelectEntityDialogTitle, SelectEntityGrouperTitle, SelectEntityLabelText))
+                using (var form = new MessageForm(deadletterDataGridView.SelectedRows.Cast<DataGridViewRow>()
+                                .Select(r => (BrokeredMessage)r.DataBoundItem), serviceBusHelper, writeToLog))
                 {
-                    if (form.ShowDialog() != DialogResult.OK)
-                    {
-                        return;
-                    }
-                    if (string.IsNullOrWhiteSpace(form.Path))
-                    {
-                        return;
-                    }
-                    entityPath = form.Path;
+                    form.ShowDialog();
                 }
-                var sent = 0;
-                var messageSender = await serviceBusHelper.MessagingFactory.CreateMessageSenderAsync(entityPath);
-                var messages = deadletterDataGridView.SelectedRows.Cast<DataGridViewRow>().Select(r =>
-                {
-                    BodyType bodyType;
-                    var message = r.DataBoundItem as BrokeredMessage;
-                    serviceBusHelper.GetMessageText(message, out bodyType);
-                    if (bodyType == BodyType.Wcf)
-                    {
-                        var wcfUri = serviceBusHelper.IsCloudNamespace ?
-                                         new Uri(serviceBusHelper.NamespaceUri, messageSender.Path) :
-                                         new UriBuilder
-                                         {
-                                             Host = serviceBusHelper.NamespaceUri.Host,
-                                             Path = string.Format("{0}/{1}", serviceBusHelper.NamespaceUri.AbsolutePath, messageSender.Path),
-                                             Scheme = "sb"
-                                         }.Uri;
-                        return serviceBusHelper.CreateMessageForWcfReceiver(message,
-                                                                            0,
-                                                                            false,
-                                                                            false,
-                                                                            wcfUri);
-                    }
-                    return serviceBusHelper.CreateMessageForApiReceiver(message,
-                                                                        0,
-                                                                        false,
-                                                                        false,
-                                                                        false,
-                                                                        bodyType,
-                                                                        null);
-                });
-                IEnumerable<BrokeredMessage> brokeredMessages = messages as IList<BrokeredMessage> ?? messages.ToList();
-                if (brokeredMessages.Any())
-                {
-                    sent = brokeredMessages.Count();
-                    await messageSender.SendBatchAsync(brokeredMessages);
-                }
-                writeToLog(string.Format(MessageSentMessage, sent, entityPath));
             }
             catch (Exception ex)
             {
@@ -3052,9 +3101,9 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
         {
             try
             {
-                if (disposing && (components != null))
+                if (disposing)
                 {
-                    components.Dispose();
+                    components?.Dispose();
                 }
 
 
@@ -3271,6 +3320,32 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                         : null;
                 }
             });
+        }
+
+        private async void btnPurgeMessages_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                Application.UseWaitCursor = true;
+                await PurgeMessagesAsync();
+            }
+            finally
+            {
+                Application.UseWaitCursor = false;
+            }
+        }
+
+        private async void btnPurgeDeadletterQueueMessages_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                Application.UseWaitCursor = true;
+                await PurgeDeadletterQueueMessagesAsync();
+            }
+            finally
+            {
+                Application.UseWaitCursor = false;
+            }
         }
         #endregion
     }

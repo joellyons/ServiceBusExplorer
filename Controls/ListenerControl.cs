@@ -20,24 +20,28 @@
 #endregion
 
 #region Using Directives
+
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
-using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.ServiceModel.Channels;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using System.Linq;
+using Microsoft.Azure.ServiceBusExplorer.Forms;
+using Microsoft.Azure.ServiceBusExplorer.Helpers;
 using Microsoft.ServiceBus.Messaging;
+
 #endregion
 
-namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
+namespace Microsoft.Azure.ServiceBusExplorer.Controls
 {
     public partial class ListenerControl : UserControl
     {
@@ -156,6 +160,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
         private ContainerForm containerForm;
         private bool autoComplete;
         private bool stopping;
+        private bool logStopped;
         private bool logging;
         private bool verbose;
         private bool tracking;
@@ -175,6 +180,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                                ServiceBusHelper serviceBusHelper, 
                                EntityDescription entityDescription)
         {
+            this.logStopped = false;
             Task.Factory.StartNew(AsyncTrackMessage).ContinueWith(t =>
             {
                 if (t.IsFaulted && t.Exception != null)
@@ -1227,7 +1233,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
         {
             try
             {
-                while (true)
+                while (!cancellationTokenSource.IsCancellationRequested && !logStopped)
                 {
                     try
                     {
@@ -1643,6 +1649,9 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                 {
                     Controls[i].Dispose();
                 }
+
+
+                this.logStopped = true;
 
                 base.Dispose(disposing);
             }

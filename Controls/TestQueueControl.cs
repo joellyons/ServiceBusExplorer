@@ -20,24 +20,27 @@
 #endregion
 
 #region Using Directives
+
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
-using System.Globalization;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Transactions;
 using System.Windows.Forms;
-using System.Threading;
 using System.Windows.Forms.DataVisualization.Charting;
+using Microsoft.Azure.ServiceBusExplorer.Forms;
+using Microsoft.Azure.ServiceBusExplorer.Helpers;
 using Microsoft.ServiceBus.Messaging;
 using Cursor = System.Windows.Forms.Cursor;
 #endregion
 
-namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
+namespace Microsoft.Azure.ServiceBusExplorer.Controls
 {
     public delegate void UpdateStatisticsDelegate(long messageNumber, long elapsedMilliseconds, DirectionType direction);
 
@@ -63,9 +66,6 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
         private const string DefaulReceiveBatchSize = "10";
         private const string DefaultSenderTaskCount = "1";
         private const string DefaultReceiverTaskCount = "1";
-        private const string DefaultReceiveTimeout = "1";
-        private const string DefaultSessionTimeout = "3";
-        private const string DefaultPrefetchCount = "0";
         private const string PeekLock = "PeekLock";
         private const string StartCaption = "Start";
         private const string StopCaption = "Stop";
@@ -195,13 +195,13 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
         private IBrokeredMessageGenerator brokeredMessageGenerator;
         private IBrokeredMessageInspector senderBrokeredMessageInspector;
         private IBrokeredMessageInspector receiverBrokeredMessageInspector;
-        private List<MessagingFactory> senderFactories = new List<MessagingFactory>();
-        private List<MessagingFactory> receiverFactories = new List<MessagingFactory>();
+        private readonly List<MessagingFactory> senderFactories = new List<MessagingFactory>();
+        private readonly List<MessagingFactory> receiverFactories = new List<MessagingFactory>();
 
         #endregion
 
         #region Private Static Fields
-        private static readonly List<string> types = new List<string> { "Boolean", "Byte", "Int16", "Int32", "Int64", "Single", "Double", "Decimal", "Guid", "DateTime", "String" };
+        private static readonly List<string> Types = new List<string> { "Boolean", "Byte", "Int16", "Int32", "Int64", "Single", "Double", "Decimal", "Guid", "DateTime", "String" };
         #endregion
 
         #region Public Constructors
@@ -304,7 +304,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                 // Create the Type column
                 var comboBoxColumn = new DataGridViewComboBoxColumn
                 {
-                    DataSource = types,
+                    DataSource = Types,
                     DataPropertyName = PropertyType,
                     Name = PropertyType,
                     Width = 90,
@@ -345,12 +345,10 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                 propertiesDataGridView.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(215, 228, 242);
                 propertiesDataGridView.ColumnHeadersDefaultCellStyle.ForeColor = SystemColors.ControlText;
 
-                txtMessageText.Text = mainForm != null &&
-                                      !string.IsNullOrWhiteSpace(mainForm.MessageText) ?
-                                      XmlHelper.Indent(mainForm.MessageText) :
+                txtMessageText.Text = !string.IsNullOrWhiteSpace(mainForm?.MessageText) ?
+                                      JsonSerializerHelper.Indent(XmlHelper.Indent(mainForm.MessageText)) :
                                       DefaultMessageText;
-                txtLabel.Text = mainForm != null &&
-                                !string.IsNullOrWhiteSpace(mainForm.Label) ?
+                txtLabel.Text = !string.IsNullOrWhiteSpace(mainForm?.Label) ?
                                 mainForm.Label :
                                 DefaultMessageText;
                 txtMessageId.Text = Guid.NewGuid().ToString();
@@ -369,15 +367,9 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                 txtReceiveBatchSize.Text = DefaulReceiveBatchSize;
                 txtSendTaskCount.Text = DefaultSenderTaskCount;
                 txtReceiveTaskCount.Text = DefaultReceiverTaskCount;
-                txtReceiveTimeout.Text = mainForm != null ?
-                                         mainForm.ReceiveTimeout.ToString(CultureInfo.InvariantCulture) :
-                                         DefaultReceiveTimeout;
-                txtSessionTimeout.Text = mainForm != null ?
-                                         mainForm.ServerTimeout.ToString(CultureInfo.InvariantCulture) :
-                                         DefaultSessionTimeout;
-                txtPrefetchCount.Text = mainForm != null ?
-                                        mainForm.PrefetchCount.ToString(CultureInfo.InvariantCulture) :
-                                        DefaultPrefetchCount;
+                txtReceiveTimeout.Text = mainForm?.ReceiveTimeout.ToString(CultureInfo.InvariantCulture);
+                txtSessionTimeout.Text = mainForm?.ServerTimeout.ToString(CultureInfo.InvariantCulture);
+                txtPrefetchCount.Text = mainForm?.PrefetchCount.ToString(CultureInfo.InvariantCulture);
                 cboReceivedMode.SelectedIndex = 1;
                 txtSendBatchSize.Enabled = false;
                 txtReceiveBatchSize.Enabled = false;
@@ -561,10 +553,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                 if (serviceBusHelper != null &&
                     ValidateParameters())
                 {
-                    if (startLog != null)
-                    {
-                        startLog();
-                    }
+                    startLog?.Invoke();
                     btnStart.Enabled = false;
                     Cursor.Current = Cursors.WaitCursor;
 
@@ -620,7 +609,11 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                         }
                         if (!cts.IsCancellationRequested)
                         {
-                            Invoke((MethodInvoker)delegate { btnStart.Text = StartCaption; });
+                            Invoke((MethodInvoker) delegate
+                            {
+                                btnStart.Text = StartCaption;
+                                MainForm.SingletonMainForm.refreshEntity_Click(null, null);
+                            });
                         }
                     };
 
@@ -664,10 +657,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                                 var sendTuple = new Tuple<long, long, DirectionType>(sendMessageNumber, sendTotalTime, DirectionType.Send);
                                 if (InvokeRequired)
                                 {
-                                    Invoke(new UpdateStatisticsDelegate(InternalUpdateStatistics),
-                                           new object[] { sendTuple.Item1, 
-                                                          sendTuple.Item2, 
-                                                          sendTuple.Item3 });
+                                    Invoke(new UpdateStatisticsDelegate(InternalUpdateStatistics), sendTuple.Item1, sendTuple.Item2, sendTuple.Item3);
                                 }
                                 else
                                 {
@@ -681,10 +671,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                                 var receiveTuple = new Tuple<long, long, DirectionType>(receiveMessageNumber, receiveTotalTime, DirectionType.Receive);
                                 if (InvokeRequired)
                                 {
-                                    Invoke(new UpdateStatisticsDelegate(InternalUpdateStatistics),
-                                           new object[] { receiveTuple.Item1, 
-                                                          receiveTuple.Item2, 
-                                                          receiveTuple.Item3 });
+                                    Invoke(new UpdateStatisticsDelegate(InternalUpdateStatistics), receiveTuple.Item1, receiveTuple.Item2, receiveTuple.Item3);
                                 }
                                 else
                                 {
@@ -703,13 +690,14 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                     AsyncCallback updateGraphCallback = a =>
                     {
                         var action = a.AsyncState as Action;
-                        if (action != null)
+                        if (action == null)
                         {
-                            action.EndInvoke(a);
-                            if (Interlocked.Decrement(ref actionCount) == 0)
-                            {
-                                managerResetEvent.Set();
-                            }
+                            return;
+                        }
+                        action.EndInvoke(a);
+                        if (Interlocked.Decrement(ref actionCount) == 0)
+                        {
+                            managerResetEvent.Set();
                         }
                     };
 
@@ -752,7 +740,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
                         {
                             bodyType = BodyType.Stream;
                         }
-                        bool isBinary = false;
+                        var isBinary = false;
                         // Create outbound message template list
                         var messageTemplateList = new List<BrokeredMessage>();
                         var messageTextList = new List<string>();
@@ -1239,12 +1227,12 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
 
         private void HandleException(Exception ex)
         {
-            if (ex == null || string.IsNullOrWhiteSpace(ex.Message))
+            if (string.IsNullOrWhiteSpace(ex?.Message))
             {
                 return;
             }
             writeToLog(string.Format(CultureInfo.CurrentCulture, ExceptionFormat, ex.Message));
-            if (ex.InnerException != null && !string.IsNullOrWhiteSpace(ex.InnerException.Message))
+            if (!string.IsNullOrWhiteSpace(ex.InnerException?.Message))
             {
                 writeToLog(string.Format(CultureInfo.CurrentCulture, InnerExceptionFormat, ex.InnerException.Message));
             }
@@ -1368,22 +1356,10 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
             {
                 await stopLog();
             }
-            if (managerCancellationTokenSource != null)
-            {
-                managerCancellationTokenSource.Cancel();
-            }
-            if (graphCancellationTokenSource != null)
-            {
-                graphCancellationTokenSource.Cancel();
-            }
-            if (senderCancellationTokenSource != null)
-            {
-                senderCancellationTokenSource.Cancel();
-            }
-            if (receiverCancellationTokenSource != null)
-            {
-                receiverCancellationTokenSource.Cancel();
-            }
+            managerCancellationTokenSource?.Cancel();
+            graphCancellationTokenSource?.Cancel();
+            senderCancellationTokenSource?.Cancel();
+            receiverCancellationTokenSource?.Cancel();
 
             // always cleans up the factories
             // clean up factories if the checkbox is checked.
@@ -1425,10 +1401,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
         internal async void btnCancel_Click(object sender, EventArgs e)
         {
             await CancelActions();
-            if (OnCancel != null)
-            {
-                OnCancel();
-            }
+            OnCancel?.Invoke();
         }
 
         private void mainTabControl_DrawItem(object sender, DrawItemEventArgs e)
@@ -1967,9 +1940,7 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
             }
             foreach (var fileInfo in openFileDialog.FileNames.Select(fileName => new FileInfo(fileName)))
             {
-                var size = string.Format("{0} KB", fileInfo.Length % 1024 == 0
-                                                       ? fileInfo.Length / 1024
-                                                       : fileInfo.Length / 1024 + 1);
+                var size = $"{(fileInfo.Length%1024 == 0 ? fileInfo.Length/1024 : fileInfo.Length/1024 + 1)} KB";
                 messageFileListView.Items.Add(new ListViewItem(new[]
                 {
                     fileInfo.FullName,
@@ -2127,66 +2098,39 @@ namespace Microsoft.WindowsAzure.CAT.ServiceBusExplorer
         {
             try
             {
-                if (disposing && (components != null))
+                if (disposing)
                 {
-                    components.Dispose();
+                    components?.Dispose();
                 }
 
-                if (senderCancellationTokenSource != null)
-                {
-                    senderCancellationTokenSource.Dispose();
-                }
+                senderCancellationTokenSource?.Dispose();
 
-                if (receiverCancellationTokenSource != null)
-                {
-                    receiverCancellationTokenSource.Dispose();
-                }
+                receiverCancellationTokenSource?.Dispose();
 
-                if (managerCancellationTokenSource != null)
-                {
-                    managerCancellationTokenSource.Dispose();
-                }
+                managerCancellationTokenSource?.Dispose();
 
-                if (graphCancellationTokenSource != null)
-                {
-                    graphCancellationTokenSource.Dispose();
-                }
+                graphCancellationTokenSource?.Dispose();
 
-                if (managerResetEvent != null)
-                {
-                    managerResetEvent.Dispose();
-                }
+                managerResetEvent?.Dispose();
 
-                if (blockingCollection != null)
-                {
-                    blockingCollection.Dispose();
-                }
+                blockingCollection?.Dispose();
 
                 if (brokeredMessageGenerator != null)
                 {
                     var disposable = brokeredMessageGenerator as IDisposable;
-                    if (disposable != null)
-                    {
-                        disposable.Dispose();
-                    }
+                    disposable?.Dispose();
                 }
 
                 if (senderBrokeredMessageInspector != null)
                 {
                     var disposable = senderBrokeredMessageInspector as IDisposable;
-                    if (disposable != null)
-                    {
-                        disposable.Dispose();
-                    }
+                    disposable?.Dispose();
                 }
 
                 if (receiverBrokeredMessageInspector != null)
                 {
                     var disposable = receiverBrokeredMessageInspector as IDisposable;
-                    if (disposable != null)
-                    {
-                        disposable.Dispose();
-                    }
+                    disposable?.Dispose();
                 }
 
                 for (var i = 0; i < Controls.Count; i++)
